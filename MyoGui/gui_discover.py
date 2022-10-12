@@ -27,6 +27,8 @@ SOFTWARE.
 import gc
 import sys
 import asyncio
+from asyncio import AbstractEventLoop
+import bleak
 from PySide6.QtWidgets import QApplication, QMainWindow, QWidget
 from PySide6.QtWidgets import QVBoxLayout
 from PySide6.QtWidgets import QPushButton, QComboBox, QTextBrowser
@@ -37,7 +39,7 @@ from qmyo import QMyo
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, loop):
+    def __init__(self, loop: AbstractEventLoop):
         super(MainWindow, self).__init__()
 
         self._device = None
@@ -108,7 +110,7 @@ class MainWindow(QMainWindow):
                     self.btn_disconn.setEnabled(not self._is_connected)
                     self._is_connected = not self._is_connected
 
-            except Exception as e:
+            except bleak.BleakError:
                 pass
 
     @asyncSlot()
@@ -125,7 +127,7 @@ class MainWindow(QMainWindow):
                     self.cbx_device.setEnabled(self._is_connected)
                     self.btn_disconn.setEnabled(not self._is_connected)
                     self._is_connected = not self._is_connected
-            except Exception:
+            except bleak.BleakError:
                 pass
 
             del self._device

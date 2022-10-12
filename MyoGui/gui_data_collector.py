@@ -129,7 +129,7 @@ class MainWindow(QMainWindow):
         for i in range(8):
             pwg = PlotWidget(name='PlotEmg')
             pwg.setXRange(0, self.sample_displayed)
-            pwg.setYRange(-600, 600)
+            pwg.setYRange(-200, 200)
             # pwg.setAspectLocked(True)
             self.plot_emgs.append(pwg.plot(pen='y'))
             self.curve_emgs.append(deque(self.sample_displayed * [0], maxlen=self.sample_displayed))
@@ -283,6 +283,10 @@ class MainWindow(QMainWindow):
     def receive_connected(self, connected: bool) -> None:
         self._connected = connected
 
+    @Slot(int)
+    def receive_battery(self, battery: int) -> None:
+        self.lbl_battery_1.setText(f'{battery} %')
+
     @Slot(tuple)
     def receive_raw_emg(self, data_raw_emg: tuple):
         self._update_recording_file(data_raw_emg)
@@ -303,7 +307,7 @@ class MainWindow(QMainWindow):
             self.curve_emgs[i].appendleft(data_raw_emg[0][i])
             self.curve_emgs[i].appendleft(data_raw_emg[1][i])
             self.plot_emgs[i].setData(self.curve_emgs[i])
-        time.sleep(0.002)
+        time.sleep(0.005)
 
     def _update_recording_file(self, data_raw_emg: tuple) -> None:
         try:
@@ -313,15 +317,26 @@ class MainWindow(QMainWindow):
         except IOError:
             self.tbr_console.append(f'Failed recording file!')
 
+    def _reset_emg_plot(self) -> None:
+        # reset plots
+        del self.curve_emgs
+        gc.collect()
+        self.curve_emgs = list()
+        for i in range(8):
+            self.curve_emgs.append(deque(self.sample_displayed * [0], maxlen=self.sample_displayed))
+            self.plot_emgs[i].setData(self.curve_emgs[-1])
+
     async def _init_device(self, address: str) -> None:
         if isinstance(self._myo, QMyo):
-            if self._connected:
-                await self._myo.disconnect_device()
-        loop_myo = asyncio.get_event_loop()
-        self._myo = QMyo(loop_myo)
-        self._myo.signal_connected.connect(self.receive_connected)
-        self.signal_streamed.connect(self._myo.receive_streamed)
-        await self._myo.connect_device(address)
+            await self._myo.connect_device(address)
+        else:
+            loop_myo = asyncio.get_event_loop()
+            self._myo = QMyo(loop_myo)
+            self._myo.signal_connected.connect(self.receive_connected)
+            self.signal_streamed.connect(self._myo.receive_streamed)
+            await self._myo.connect_device(address)
+            self._myo.signal_battery.connect(self.receive_battery)
+            self._myo.ensure_send_battery()
 
     def handle_directory(self) -> None:
         self._dir = QFileDialog.getExistingDirectory(self, 'Select location for save', './')
@@ -431,6 +446,10 @@ class MainWindow(QMainWindow):
             #
             self.lne_gesture.setEnabled(True)
             self.lne_repetition.setEnabled(True)
+
+            # reset EMG plot
+            self._reset_emg_plot()
+
         else:
             self.tbr_console.append('Try disconnecting again!')
 
@@ -453,6 +472,7 @@ class MainWindow(QMainWindow):
 
         # activate/deactivate some buttons and text boxes
         self.btn_dir.setEnabled(False)
+        self.btn_disconn.setEnabled(False)
         self.btn_start.setEnabled(False)
         self.btn_save.setEnabled(True)
         #
@@ -470,16 +490,12 @@ class MainWindow(QMainWindow):
 
         # print(self._streamed)
 
-        # reset plots
-        del self.curve_emgs
-        gc.collect()
-        self.curve_emgs = list()
-        for i in range(8):
-            self.curve_emgs.append(deque(self.sample_displayed * [0], maxlen=self.sample_displayed))
-            self.plot_emgs[i].setData(self.curve_emgs[-1])
+        # reset EMG plot
+        self._reset_emg_plot()
 
         # activate/deactivate some buttons and text boxes
         self.btn_dir.setEnabled(True)
+        self.btn_disconn.setEnabled(True)
         self.btn_start.setEnabled(True)
         self.btn_save.setEnabled(False)
         #

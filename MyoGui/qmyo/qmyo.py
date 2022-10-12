@@ -31,6 +31,7 @@ import bleak
 from async_property import async_property
 from bleak import BleakClient
 from bleak.backends.characteristic import BleakGATTCharacteristic, UUID
+from bleak.backends.device import BLEDevice
 from PySide6.QtCore import QObject, Signal, Slot
 from .defines import *
 
@@ -39,6 +40,7 @@ __all__ = ['QMyo']
 
 class QMyo(QObject):
     signal_connected = Signal(bool)
+    signal_battery   = Signal(int)
     signal_raw_emg   = Signal(tuple)
 
     def __init__(self, loop: asyncio.AbstractEventLoop, parent: QObject = None) -> None:
@@ -53,7 +55,6 @@ class QMyo(QObject):
         self._reset()
         self._loop = loop
         self._handle_raw_emgs = [NotifHandle.EMG_0, NotifHandle.EMG_1, NotifHandle.EMG_2, NotifHandle.EMG_3]
-        self._handle_filt_emgs = [NotifHandle.EMG_PROC, NotifHandle.EMG_0, NotifHandle.EMG_1, NotifHandle.EMG_2, NotifHandle.EMG_3]
         self._handle_imu = [NotifHandle.IMU]
 
     def _reset(self) -> None:
@@ -161,31 +162,6 @@ class QMyo(QObject):
         emg = struct.unpack('<16b', data)
         await self._queue_raw_emg.put((idx, emg))
 
-    async def _callback_filt_emg(self, sender: int, data: bytearray) -> None:
-        """
-        Callback function to get filtered EMG data
-
-        :param sender: the handle to send
-        :param data: the data
-        :return:
-        """
-
-        if sender not in [NotifHandle.EMG_PROC, NotifHandle.EMG_0, NotifHandle.EMG_1, NotifHandle.EMG_2, NotifHandle.EMG_3]:
-            raise ValueError(f'Incorrect filtered EMG handles. Got {sender} handle.')
-
-        idx = 0
-        if sender == NotifHandle.EMG_0:
-            idx = 0
-        elif sender == NotifHandle.EMG_1:
-            idx = 1
-        elif sender == NotifHandle.EMG_2:
-            idx = 2
-        elif sender == NotifHandle.EMG_3:
-            idx = 3
-
-        emg = struct.unpack('<8H', data)
-        await self._queue_filt_emg.put((idx, emg))
-
     async def connect_device(self, address: str, **kwargs) -> None:
         """
         Connect to Myo device
@@ -202,7 +178,7 @@ class QMyo(QObject):
                 await self._device.connect()
 
                 self._connected = True
-        except bleak.exc.BleakError:
+        except bleak.BleakError:
             self._connected = False
 
         # get basic information from Myo device
@@ -227,7 +203,7 @@ class QMyo(QObject):
                 await self._device.disconnect()
 
                 self._connected = False
-        except bleak.exc.BleakError:
+        except bleak.BleakError:
             self._connected = True
 
         self._reset()
@@ -373,6 +349,19 @@ class QMyo(QObject):
                                                  patch=firmware[2],
                                                  hardware_rev=HardwareRevision(firmware[3]))
 
+    async def send_battery_level(self) -> None:
+        """
+        Send battery level
+
+        :return:
+        """
+
+        try:
+            while self._connected:
+                self.signal_battery.emit(ord(await self._read_data(InfoHandle.BATTERY)))
+        except bleak.BleakError:
+            pass
+
     async def stream_raw_emg(self) -> None:
         """
         Stream raw EMG data
@@ -385,7 +374,7 @@ class QMyo(QObject):
 
             # set device modes
             await self.unlock_device(UnlockMode.HOLD)
-            await self.set_mode(EmgMode.RAW)
+            await self.set_mode(EmgMode.FILT)
 
             # subscribe EMG notifications
             await self._start_subscription(self._handle_raw_emgs, self._callback_raw_emg)
@@ -400,47 +389,21 @@ class QMyo(QObject):
                 else:
                     await asyncio.sleep(0.0001)
 
-            await self._stop_subscription(self._handle_raw_emgs)
-        except bleak.exc.BleakError:
+            if isinstance(self._device, BLEDevice):
+                await self._stop_subscription(self._handle_raw_emgs)
+        except bleak.BleakError:
             self._connected = False
 
-    async def stream_filt_emg(self) -> None:
-        """
-        Stream filtered EMG data
+    def ensure_send_battery(self) -> None:
+        self._battery_task = asyncio.ensure_future(self.send_battery_level(), loop=self._loop)
 
-        :return:
-        """
+    def ensure_stream_raw_emg(self) -> None:
+        self._stream_emg_task = asyncio.ensure_future(self.stream_raw_emg(), loop=self._loop)
 
-        try:
-            # print(self._streamed)
+    def reset_tasks(self) -> None:
+        self._battery_task.cancel()
+        self._stream_emg_task.cancel()
 
-            # set device modes
-            await self.unlock_device(UnlockMode.HOLD)
-            await self.set_mode(EmgMode.RAW)
-
-            # subscribe EMG notifications
-            await self._start_subscription(self._handle_filt_emgs, self._callback_filt_emg)
-
-            while self._connected:
-                if self._queue_filt_emg.qsize() > 0:
-                    char_received, emg = await self._queue_filt_emg.get()
-                    print(emg)
-                    # self._data_raw_emg = (emg[:8], emg[8:])
-                    if self._streamed:
-                        # send data when click Start button in GUI
-                        self.signal_raw_emg.emit(self._data_filt_emg)
-                else:
-                    await asyncio.sleep(0.0001)
-
-            await self._stop_subscription(self._handle_filt_emgs)
-        except bleak.exc.BleakError:
-            self._connected = False
-
-    def ensure_stream_raw_emg(self):
-        self.task = asyncio.ensure_future(self.stream_raw_emg(), loop=self._loop)
-
-    def ensure_stream_filt_emg(self):
-        self.task = asyncio.ensure_future(self.stream_filt_emg(), loop=self._loop)
 
     @async_property
     async def name(self) -> str:
